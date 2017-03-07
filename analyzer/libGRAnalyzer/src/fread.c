@@ -23,15 +23,8 @@
 
 
 #include "freadin.h"
-#include "histogram.h"
-#include "analyzer.h"
-#include "mtformat.h"
-#include "lr3377.h"
-#include "fera.h"
 #include "builder.h"
-#include "v1190.h"
-
-#define VAR_END      "END VARIABLES"
+#include "histogram.h"
 
 static char title[] = "Analyzer ver 1.00 31-JUL-2000";
 
@@ -44,6 +37,31 @@ static char title[] = "FRead ver 1.00 04-MAY-1997";
 static char title[] = "FRead ver 2.00 03-JUN-2000";
 #endif
 
+
+int pflag = 0;                /* parent process flag */
+int cflag = 0;                /* child process flag */
+int childn = 0;               /* child number for child process */
+
+#define MAX_NFDEF 10
+FILE   *findef = (FILE*)NULL;
+
+#if USE_PAW
+FILE   *falias = (FILE*)NULL;
+#endif
+int    byte_order=BIG_ENDIAN;
+int    swap=0;
+
+int    nrun = 0;
+int    nblk = 0;
+char   *ofile = (char*)NULL;
+int    line;               /* for lex */
+
+int    shmflag = 1;
+int    rootflag = 0;
+
+
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
+#else
 extern int neval;
 extern int level;
 
@@ -51,26 +69,17 @@ int msgid = -1;
 int msgkey = -1;
 int parse_error;
 int format=FORMAT_UNDEFINED;      /* data format */
-int pflag = 0;                /* parent process flag */
-int cflag = 0;                /* child process flag */
 int nchild = 0;               /* number of child processes */
-int childn = 0;               /* child number for child process */
 child_data_t cd[MAX_NCHILD];  /* child data */
 
 #define MAX_NFDEF 10
 int    nfdef = 0;
 char   *deffnam[MAX_NFDEF];
-FILE   *findef = (FILE*)NULL;
 
 char   *filename;
 char   *finnam;
 int    findat = 0;
 FILE   *fout = (FILE*)NULL;
-#if USE_PAW
-FILE   *falias = (FILE*)NULL;
-#endif
-int    byte_order=BIG_ENDIAN;
-int    swap=0;
 
 #if 1
 int    blksize = 0x100000;  /* Default = 256KByte */
@@ -78,27 +87,74 @@ int    blksize = 0x100000;  /* Default = 256KByte */
 int    blksize = 0x10000;  /* Default = 64KByte */
 #endif
 
-int    nrun = 0;
-int    nblk = 0;
 unsigned char   *dbuf = (unsigned char*)NULL;
 unsigned char   *sbuf = (unsigned char*)NULL;
-char   *ofile = (char*)NULL;
-int    line;               /* for lex */
 
-int    shmflag = 1;
-int    rootflag = 0;
 char   *hbfnam = (char*)NULL;
 
 extern void yyparse();
+#endif
+
+
+/* swaps --- swap the short words in an integer */
+void swaps(data)
+		 unsigned int  *data;
+{
+	union val{
+		int      vint;
+		short    vshort[2];
+	} v, *vp;
+	v.vint = *data;
+	vp = (union val*)data;
+	vp->vshort[0] = v.vshort[1];
+	vp->vshort[1] = v.vshort[0];
+}
+	
+	static char *cd_buf = (char*)NULL;
+	static int  cd_pos  = 0;
+
+/* write_child_data --- buffer child data and write */
+void write_child_data(buf, size)
+		 char *buf;
+		 int  size;
+{
+#define CD_BUF_SIZE  65536*10
+	
+	if(cd_buf==(char*)NULL){
+		cd_buf = (char*)malloc(CD_BUF_SIZE);
+		if(cd_buf==(char*)NULL){
+			fprintf(stderr, "write_child_data: could not allocate memory.\n");
+			exit(-1);
+		}
+	}
+	
+	memmove(&cd_buf[cd_pos], buf, size);
+	cd_pos+=size;
+	if(cd_pos>(CD_BUF_SIZE*4/5)){
+		flush_child_data();
+	}
+}
+
+/* flush_child_data --- flush child data */
+void flush_child_data()
+{
+	write(1, cd_buf, cd_pos);
+	//fprintf(stderr, "flush size = %d\n", cd_pos);
+	cd_pos = 0;
+}
 
 /* show error */
 void showerr(char *format, ...)
 {
-	va_list  args;
-	va_start(args, format);
-	vfprintf(stderr, format, args);
-	va_end(args);
+				va_list  args;
+				va_start(args, format);
+				vfprintf(stderr, format, args);
+				va_end(args);
 }
+
+
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
+#else
 
 /* show_info --- show information */
 static void show_info()
@@ -197,52 +253,7 @@ void domsg(){
 	}
 }
 
-/* swaps --- swap the short words in an integer */
-void swaps(data)
-		 unsigned int  *data;
-{
-	union val{
-		int      vint;
-		short    vshort[2];
-	} v, *vp;
-	v.vint = *data;
-	vp = (union val*)data;
-	vp->vshort[0] = v.vshort[1];
-	vp->vshort[1] = v.vshort[0];
-}
-	
-	static char *cd_buf = (char*)NULL;
-	static int  cd_pos  = 0;
 
-/* write_child_data --- buffer child data and write */
-void write_child_data(buf, size)
-		 char *buf;
-		 int  size;
-{
-#define CD_BUF_SIZE  65536*10
-	
-	if(cd_buf==(char*)NULL){
-		cd_buf = (char*)malloc(CD_BUF_SIZE);
-		if(cd_buf==(char*)NULL){
-			fprintf(stderr, "write_child_data: could not allocate memory.\n");
-			exit(-1);
-		}
-	}
-	
-	memmove(&cd_buf[cd_pos], buf, size);
-	cd_pos+=size;
-	if(cd_pos>(CD_BUF_SIZE*4/5)){
-		flush_child_data();
-	}
-}
-
-/* flush_child_data --- flush child data */
-void flush_child_data()
-{
-	write(1, cd_buf, cd_pos);
-	//fprintf(stderr, "flush size = %d\n", cd_pos);
-	cd_pos = 0;
-}
 
 /* reply_parent_buf --- reply to a parent at the end of a buffer */
 void reply_parent_buf()
@@ -382,6 +393,7 @@ int check_format(buf)
   if(dst_chk_format(buf)){
 		return(FORMAT_DST_1);
 	}
+
 
 	showerr("Unknown format: ");
 	for(i=0; i<16; i++){
@@ -541,9 +553,9 @@ int file_read()
 			}
 			if(swap){
 				swab(dbuf, sbuf, size);
-				if(read_blk_mars((unsigned short*)sbuf, size)) endflag = 1;
+				//if(read_blk_mars((unsigned short*)sbuf, size)) endflag = 1;
 			}else{
-				if(read_blk_mars((unsigned short*)dbuf, size)) endflag = 1;
+				//if(read_blk_mars((unsigned short*)dbuf, size)) endflag = 1;
 			}
 			send_child_buf(dbuf, size);
 			reply_parent_buf();
@@ -816,9 +828,6 @@ int main(argc, argv)
 	char *newargv[MAX_NARGS+3];
 	char  str[256];
 	char  cnum[256];
-	
-	clock_t t1,t2;
-	t1=clock();
 
 	//	for(i=0; i<argc; i++){
 	//		fprintf(stderr, "arg %2d = '%s'\n",i,argv[i]);
@@ -827,9 +836,10 @@ int main(argc, argv)
 
 	ac = argc;
 	av = argv;
+
 	filename = *av++;
 	ac--;
-	
+
 	/* check the arguments */
 	while(ac>0){
 		if(av[0][0]=='-'){
@@ -936,12 +946,6 @@ int main(argc, argv)
 				usage();
 				exit(0);
 				break;
-			case 'r':
-				ac--;
-				av++;
-				showerr("ROOT flag on, YEAH! You rock dude! \n");
-				rootflag = 1;
-				break;
 			default:
 				fprintf(stderr, "Unknown flag '%s'.\n",av[0]);
 				usage();
@@ -1040,18 +1044,18 @@ int main(argc, argv)
   fread_readdef();
 
 	/* do analysis */
+
   fread_ana(fin);
 
   /* do end tasks */
+
   fread_exit();
-  
-	t2 = clock() - t1;
-	float seconds = (float)t2 / CLOCKS_PER_SEC;
-	showerr("Total running time was %f s. \n", seconds);
 }
 
 #if defined (f2cFortran)
 void * MAIN__ = main;
+#endif
+
 #endif
 
 /*

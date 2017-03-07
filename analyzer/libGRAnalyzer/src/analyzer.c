@@ -31,14 +31,20 @@ int cblk = 0;  /* number of comment blocks */
 extern int nrun;
 extern int nblk;
 extern int shmflag;
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
 extern int rootflag;
 extern char *hbfnam;
+#else
+char *hbfnam;
+#endif
 extern char *shmnam;
 extern FILE *falias;
 
 extern int pflag;    /* parent flag */
 extern int cflag;    /* child flag */
 extern int childn;   /* child process number */
+
+extern int ShowStatus();  // print status flag from GRUTinizer
 
 
 /* initialize */
@@ -148,8 +154,10 @@ int event_exit(){
 	/* DST exit tasks */
 	dst_exit();
 
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
 	if(rootflag == 1)
 		root_exit();
+#endif
 
 	save_histograms();
 	hb_exit(shmflag);
@@ -252,8 +260,10 @@ int event(){
 	show_debug();
 	dst_write_data();
 
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
 	if(rootflag == 1)
 		root_write_data();
+#endif
 
 	dr_set(ANALYZED,1);
 #if 0
@@ -326,31 +336,36 @@ int evt_start(){
   evt_start_f2();
 #endif
 	dst_init();
-	
+
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
 	if(rootflag == 1)
 		root_init(nrun);
+#endif
 
     return 0;
-	
+
 }
-	
+
 void show_blk_num(flag)
 		 int flag;
 {
+#if USE_GRUTINIZER // added on 2017.1.25 by A. Tamii
+	if(!ShowStatus()) return;
+#endif
 	if(flag || cflag || nblk/10*10==nblk){
 		if(nblk>1){
 #if 1
 			fprintf(stderr, "%5d - blocks  A/R = %5.2f%%   \n%c%c",
-						 nblk, (double)ablk/(double)(nblk-cblk+1)*100.,
-						 27, 'M');
+							nblk, (double)ablk/(double)(nblk-cblk+1)*100.,
+							27, 'M');
 #else
 			fprintf(stderr, "%5d - blocks  A/R = %5.2f%%   \n",
-						 nblk, (double)ablk/(double)(nblk-cblk+1)*100.);
+							nblk, (double)ablk/(double)(nblk-cblk+1)*100.);
 #endif
 		}else{
 			fprintf(stderr, "%5d - blocks\n%c%c", nblk, 27, 'M');
 		}
-    }
+	}
 }
 
 /* check block number (return with 1 ... no analysis, 0 ... analysis) */

@@ -56,7 +56,6 @@ int nblk_flag = 0;
 
 #define USE_SEQ_NUMBER_IN_DATA  1  // Use block number and event number in the data
 
-
 static char *module[16] = {
 	"Irregal ", "VDC-OLD ", "NIM-IN  ", "ADC     ",
 	"TDC     ", "PCOS-OLD", "Scaler  ", "LR3377  ",
@@ -72,20 +71,23 @@ static char *fera_name[16] = {
 };
 static int  h_fera_data_id[16];
 
+//-- Added on 2017.1.25 by A. Tamii
+static int get_qtc_ch(geo,ch){
+	// modified on 2017.1.20
+	if(geo<0 || geo==2 || geo==6 || 8<=geo) return -1; // correct
+	//	if(geo<0 || 8<=geo) return -1; // wrong for U1 and U2 channel 0-15
+	if(ch<96 || 112<=ch) return -1;
+	return (geo*16+(ch-96));
+}
+//-- End added
 
 #if 1 // 13-July-2014
 #define V1190_BASE_TIME_CH (127)
+#define V1190_BASE_TIME_CH2 (0)
 #define V1190_BUFCH_CH     (126)
 #else
 #define V1190_BASE_TIME_CH (112)
 #endif
-
-static int get_qtc_ch(geo,ch){
-	if(geo<0 || 8<=geo) return -1; // module does not exist
-	if(geo % 2 == 0) return -1; // QTC are only used on odd geo TDC
-	if(ch<96 || 112<=ch) return -1; // QTC are set on the last port of each TDC
-	return (geo*16+(ch-96));
-}
 
 /* read region */
 static int read_rgn(buf, size)
@@ -106,14 +108,17 @@ static int read_rgn(buf, size)
 	int type, id;
 	int data;
 	double ddata;
+	double pdata; //-- added on 2017.1.25 by A. Tamii
+  int idata; // --- newer code 2016.11.9 according to the discussion with Y. Watanabe --- // inserted on 2017.1.25 by A. Tamii
 	int mid;
 	int pl;
 	int ch;
 	int qtc_ch, detector_ch;
-	int wire, w;
+	int wire, w, wire2;
 	V1190_DATA_t   v1190;
 	int geo=0;
 	int base_time[V1190_MAX_N_MODULES];
+  unsigned long long time_stamp;
 
 	MADC32_HEADER_SIGNATURE_p    madc32_signature;
 	MADC32_DATA_HEADER_p         madc32_header;
@@ -158,7 +163,7 @@ static int read_rgn(buf, size)
 			}
 			break;
 		case ID_MADC32:
-			for(i=0; i<rgn_size && rgn<te; i++){	// rgn = 'data block', te = 'last element of data block'
+			for(i=0; i<rgn_size/2 && rgn<te; i++){	// rgn = 'data block', te = 'last element of data block'
 				rgn_32bits = rgn[0] | (rgn[1]<<16);	// convert 16 bits rgn to 32 bits, as our words
 				rgn += 2; // move to the next word for next iteration over the event
 				madc32_signature = (MADC32_HEADER_SIGNATURE_p)&rgn_32bits;
@@ -189,6 +194,7 @@ static int read_rgn(buf, size)
 								}
 								break;
 							case MADC32_SUBHEADER_EXTENDED_TIME_STAMP: // unused at the moment
+								break;
 							case MADC32_SUBHEADER_FILL: // unused at the moment
 								break;	
 						}
@@ -198,9 +204,17 @@ static int read_rgn(buf, size)
 				}
 			}
 			break;
-		case ID_TDC:
-			for(i=0; i<rgn_size && rgn<te; i++){
-				dr_append(GR_TDC_OLD, (*rgn++ & 0x0FFF));
+		case ID_MYRIAD:
+			if(rgn_size==4){
+				rgn++; // skip the MyRIAD Header
+				time_stamp
+					= ((unsigned long long)(rgn[0])<<32)
+					| ((unsigned long long)(rgn[1])<<16)
+					| ((unsigned long long)(rgn[2])<< 0);
+				rgn+=3;
+				dr_append(GR_MYRIAD, (double)time_stamp);
+			}else{
+				fprintf(stderr, "Unexpected MyRIAD data length (%d)\n", rgn_size);
 			}
 			break;
 		case ID_V830:
@@ -358,7 +372,7 @@ static int read_rgn(buf, size)
         		base_time[i] = -10000;
 			}
 			
-			for(i=0; i<rgn_size && pv<te; i++){
+			for(i=0; i<rgn_size/2 && pv<te; i++){
         		v1190.idata = pv[0] | (pv[1]<<16);
 				pv += 2;
 				switch(v1190.global_header.id){
@@ -371,9 +385,29 @@ static int read_rgn(buf, size)
 #if 0
 						fprintf(stderr, "Module geo= %1d, Wire = %3d, data = %7d\n",geo, wire, data);
 #endif
-						if(wire==V1190_BASE_TIME_CH && !v1190.tdc_measurement.trailing){
-							base_time[geo] = data;
-							dr_set(V1190BASE[geo],data);
+						if(geo<8){
+							// GR time reference is in chan 127
+							if(wire==V1190_BASE_TIME_CH && !v1190.tdc_measurement.trailing){
+								base_time[geo] = data;
+								dr_set(V1190BASE[geo],data);
+							}
+						}
+						else if(geo>7 && geo<22){
+							// LAS X1 plane, 3rd module is a particular case (even and chan 127)
+							if (wire==V1190_BASE_TIME_CH && (geo==10) && !v1190.tdc_measurement.trailing){
+								base_time[geo] = data;
+								dr_set(V1190BASE[geo],data);
+							}
+							// LAS odd geo modules time reference is in chan 127
+							else if(wire==V1190_BASE_TIME_CH && (geo%2 == 1) && !v1190.tdc_measurement.trailing){
+								base_time[geo] = data;
+								dr_set(V1190BASE[geo],data);
+							}
+							// LAS even geo modules time reference is in chan 0
+							else if(wire==V1190_BASE_TIME_CH2 && (geo%2 == 0) && !v1190.tdc_measurement.trailing){
+								base_time[geo] = data;
+								dr_set(V1190BASE[geo],data);
+							}
 						}
 #if 0
 						else if(wire==V1190_BUFCH_CH){
@@ -383,7 +417,7 @@ static int read_rgn(buf, size)
 				}
 			}
 		
-			for(i=0; i<rgn_size && rgn<te; i++){
+			for(i=0; i<rgn_size/2 && rgn<te; i++){
         		v1190.idata = rgn[0] | (rgn[1]<<16);
 				rgn += 2;
 				switch(v1190.global_header.id){
@@ -392,18 +426,25 @@ static int read_rgn(buf, size)
           			break;
 					case V1190_HEADER_ID_TM:
 						ch = v1190.tdc_measurement.channel;
-						if(base_time[geo]<-1000)
-							fprintf(stderr, "no base time for geo %d\n", geo);
-							
-						ddata = (v1190.tdc_measurement.measurement - base_time[geo])/10.0;
+						//if(base_time[geo]<-1000)
+							//fprintf(stderr, "no base time for geo %d\n", geo);
+#if 1     // --- newer code 2016.11.9 according to the discussion with Y. Watanabe --- // inserted on 2017.1.25 by A. Tamii
+					idata = (v1190.tdc_measurement.measurement - base_time[geo])&0x7FFFF;
+					if(idata>=0x40000) idata -= 0x80000;
+					ddata = idata/10.0;
+#else  		// ---older code---
+					ddata = (v1190.tdc_measurement.measurement - base_time[geo])/10.0;
+#endif							
 						wire = v1190_wire_map(geo,ch);
+						wire2 = (geo%2)*128+ch;
 						dr_append(V1190_RAW_CH, geo*128+wire);
 						dr_append(V1190_RAW_TDC, v1190.tdc_measurement.measurement);
 						ddata = -ddata;  // for online VDC2013 25-SEP-2013
 
 						// if QTC
-						qtc_ch = (get_qtc_ch(geo,ch))%16; // only 16 chan at the moment
-						if(qtc_ch>=0){
+						//qtc_ch = (get_qtc_ch(geo,ch))%16; // only 16 chan at the moment
+						if (geo==0 && (ch>=96 && ch<112)) {
+							qtc_ch = ch%16;
 							if(v1190.tdc_measurement.trailing) {
 								dr_append(QTC_TRAILING_CH, qtc_ch);
 								dr_append(QTC_TRAILING_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
@@ -413,44 +454,94 @@ static int read_rgn(buf, size)
 								dr_append(QTC_LEADING_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
 							}
 						}
+						
+//-- Added on 2017.1.25 by Tamii
+					qtc_ch = get_qtc_ch(geo,ch); 
+					if(qtc_ch>=0){
+						ddata = v1190.tdc_measurement.measurement - base_time[geo];
+						if(v1190.tdc_measurement.trailing){
+					    pdata = dr_get(QTC_TRAILING[qtc_ch]);
+							if(dr_is_nothing(pdata) || pdata>ddata){  // use the first data
+									dr_set(QTC_TRAILING[qtc_ch], ddata);
+				      }
+     				}else{
+					    pdata = dr_get(QTC_LEADING[qtc_ch]);
+					    if (dr_is_nothing(pdata) || pdata>ddata){  // use the first data
+					      dr_set(QTC_LEADING[qtc_ch],  ddata);
+							}
+				    }
+				  }
+//--
 						if(ch==V1190_BUFCH_CH){
 							dr_set(BUFCH[geo], ddata);
 						}
-						// if new LAS TDC #1
-						if(geo == 24){
-							detector_ch = ch;
-							if(v1190.tdc_measurement.trailing) {
-								dr_append(SSD_TRAI_CH, detector_ch);
-								dr_append(SSD_TRAI_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
-							}
-							else {
-								dr_append(SSD_LEAD_CH, detector_ch);
-								dr_append(SSD_LEAD_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
-							}
-						}
 						// if we have a leading that is not from other stuff
 						if(!v1190.tdc_measurement.trailing){
-							if(wire>=0){
+							if(wire>=0 && geo<8){
 								switch(v1190_plane_map(geo,ch)){
-									case 0: // X1 Plane
+         						case 0: // X1 Plane
 										dr_append(GR_WIRE_X1, (double)wire);
 										dr_append(GR_TDC_X1, ddata);
 										break;
 									case 1: // U1 Plane
 										dr_append(GR_WIRE_U1, (double)wire);
 										dr_append(GR_TDC_U1, ddata);
-										break;
+									  	break;
 									case 2: // X2 Plane
 										dr_append(GR_WIRE_X2, (double)wire);
 										dr_append(GR_TDC_X2, ddata);
-										break;
+									 	break;
 									case 3: // U2 Plane
 										dr_append(GR_WIRE_U2, (double)wire);
 										dr_append(GR_TDC_U2, ddata);
-										break;
-								}
+									  	break;
+									}
 							}
-						}
+							else if(geo>7 && geo<22){//for LAS VDC modified 19-Apr-2016
+								switch((int)(geo/2)){
+									case 4://X1 plane 
+										dr_append(LAS_WIRE_X1, (double)wire2);
+										dr_append(LAS_TDC_X1, ddata);
+										break;
+									case 5://X1 plane, 3rd module
+										wire2 = 128+16+ch; // ECL plugged on D input
+										dr_append(LAS_WIRE_X1, (double)wire2);
+										dr_append(LAS_TDC_X1, ddata);
+										break;
+									case 6://U1 plane 
+										dr_append(LAS_WIRE_U1, (double)wire2);
+										dr_append(LAS_TDC_U1, ddata);
+										break;
+									case 7://V1 plane 
+										dr_append(LAS_WIRE_V1, (double)wire2);
+										dr_append(LAS_TDC_V1, ddata);
+										break;
+									case 8://X2 plane 
+										dr_append(LAS_WIRE_X2, (double)wire2);
+										dr_append(LAS_TDC_X2, ddata);
+										break;
+									case 9://U2 plane 
+										dr_append(LAS_WIRE_U2, (double)wire2);
+										dr_append(LAS_TDC_U2, ddata);
+										break;
+									case 10://V2 plane 
+										dr_append(LAS_WIRE_V2, (double)wire2);
+										dr_append(LAS_TDC_V2, ddata);
+										break;
+									}
+							}
+							/*else if(geo == 24){
+								detector_ch = ch;
+								if(v1190.tdc_measurement.trailing) {
+									dr_append(SSD_TRAI_CH, detector_ch);
+									dr_append(SSD_TRAI_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
+								}
+								else {
+									dr_append(SSD_LEAD_CH, detector_ch);
+									dr_append(SSD_LEAD_TDC, v1190.tdc_measurement.measurement - base_time[geo]);
+								}
+							}*/
+					}
 	  					break;
 					case V1190_HEADER_ID_TH:
 					case V1190_HEADER_ID_TT:
@@ -475,8 +566,7 @@ static int read_rgn(buf, size)
 					rgn++;
 				}else{
 					*(short*)&fdata = *rgn++;
-					dr_set_r(&dr_data,&h_fera_data_id[type],fera_name[type],
-									 mid*16+fdata.ch, fdata.data);
+					dr_set_r(&dr_data,&h_fera_data_id[type],fera_name[type], mid*16+fdata.ch, fdata.data);
 				}
 			}
 			break;
@@ -494,8 +584,9 @@ static int read_rgn(buf, size)
 			}
 			break;
 		case ID_CHKSUM:
+			break;
 		default:
-			showerr("Never come here. Region ID= %xH\n", rgn_id>>12);
+			//showerr("Never come here. Region ID= %xH\n", rgn_id>>12);
 			break;
 		}
 		tp = &ptr[rgn_size+1];
